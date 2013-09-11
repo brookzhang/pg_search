@@ -64,7 +64,7 @@ module PgSearch
               [dictionary, Arel.sql(normalize(search_column.to_sql))]
             ).to_sql
 
-            if search_column.weight.nil?
+            if search_column.weight.nil? || (weight == 'custom')
               tsvector
             else
               "setweight(#{tsvector}, #{connection.quote(search_column.weight)})"
@@ -72,6 +72,7 @@ module PgSearch
           end.join(" || ")
         end
       end
+ 
 
       # From http://www.postgresql.org/docs/8.3/static/textsearch-controls.html
       #   0 (the default) ignores the document length
@@ -87,11 +88,48 @@ module PgSearch
       end
 
       def tsearch_rank
-        "ts_rank((#{tsdocument}), (#{tsquery}), #{normalization})"
+        if weight == 'custom'
+          tsearch_rank_custom
+        else
+          "#{rank_type}((#{tsdocument}), (#{tsquery}), #{normalization})"
+        end
+      end
+
+      def tsearch_rank_custom
+        if options[:tsvector_column]
+          column_name = connection.quote_column_name(options[:tsvector_column])
+          "#{rank_type}((#{quoted_table_name}.#{column_name}), (#{tsquery}), #{normalization})"
+        else
+          columns.map do |search_column|
+            tsvector = Arel::Nodes::NamedFunction.new(
+              "to_tsvector",
+              [dictionary, Arel.sql(normalize(search_column.to_sql))]
+            ).to_sql
+
+            if search_column.weight.nil? 
+              search_column.weight = 1
+            end
+
+            "#{rank_type}((#{tsvector}), (#{tsquery}), #{normalization}) * #{search_column.weight}"
+            
+          end.join(" + ")
+        end
+
       end
 
       def dictionary
         options[:dictionary] || :simple
+      end
+      
+      #if options[:weight] = :custom , then could use integer as weight ,instead of [A,B,C,D]
+      def weight
+        options[:weight] || 'default'
+      end
+      
+      #ts_rank : Ranks vectors based on the frequency of their matching lexemes.
+      #ts_rank_cd : This function computes the cover density ranking for the given document vector and query.
+      def rank_type
+        options[:rank_type] || 'ts_rank'
       end
 
       def arel_wrap(sql_string)
